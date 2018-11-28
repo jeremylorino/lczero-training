@@ -43,7 +43,7 @@ class ChunkDataSrc:
 class ChunkParser:
     # static batch size
     BATCH_SIZE = 8
-    def __init__(self, chunkdatasrc, shuffle_size=1, sample=1, buffer_size=1, batch_size=256, workers=None):
+    def __init__(self, chunkdatasrc, shuffle_size=1, sample=1, buffer_size=1, batch_size=256, workers=None, auto_start_workers=True):
         """
         Read data and yield batches of raw tensors.
 
@@ -78,24 +78,33 @@ class ChunkParser:
         # set number of elements in the shuffle buffer.
         self.shuffle_size = shuffle_size
         # Start worker processes, leave 2 for TensorFlow
-        if workers is None:
-            workers = max(1, mp.cpu_count() - 2)
+        self.workers = workers
+        if self.workers is None:
+            self.workers = max(1, mp.cpu_count() - 2)
+        
+        self.chunkdatasrc = chunkdatasrc
 
-        print("Using {} worker processes.".format(workers))
+        print("Using {} worker processes.".format(self.workers))
 
         # Start the child workers running
         self.readers = []
         self.writers = []
         self.processes = []
-        # for _ in range(workers):
-        #     read, write = mp.Pipe(duplex=False)
-        #     p = mp.Process(target=self.task, args=(chunkdatasrc, write))
-        #     self.processes.append(p)
-        #     p.start()
-        #     self.readers.append(read)
-        #     self.writers.append(write)
+        if auto_start_workers:
+            self.start_workers()
         self.init_structs()
 
+    def start_workers(self, workers=None):
+        if workers is None:
+            workers = self.workers
+
+        for _ in range(workers):
+            read, write = mp.Pipe(duplex=False)
+            p = mp.Process(target=self.task, args=(self.chunkdatasrc, write))
+            self.processes.append(p)
+            p.start()
+            self.readers.append(read)
+            self.writers.append(write)
 
     def shutdown(self):
         """
@@ -196,7 +205,7 @@ class ChunkParser:
                  rule50_plane.tobytes() + \
                  self.flat_planes[move_count].tobytes() + \
                  self.flat_planes[1].tobytes()
-        
+
         assert len(planes) == ((8*13*1 + 8*1*1) * 8 * 8 * 4)
         winner = float(winner)
         assert winner == 1.0 or winner == -1.0 or winner == 0.0
@@ -210,7 +219,6 @@ class ChunkParser:
             raw_pack[5], 
             raw_pack[6], 
             raw_pack[7], 
-            # raw_pack[8], 
             rule50_plane,
             raw_pack[9], 
             winner, 

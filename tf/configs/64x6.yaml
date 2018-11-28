@@ -1,0 +1,35 @@
+%YAML 1.2
+---
+name: '64x6-test-6'                       # ideally no spaces
+gpu: 0                                 # gpu id to process on
+
+dataset: 
+  num_chunks: 10000 # 120000                   # newest nof chunks to parse
+  train_ratio: 0.90                    # trainingset ratio
+  input: '/home/jeremylorino/lczero-training/data/training-run1-20181116-2017/'
+
+training:
+    batch_size: 1024
+    num_batch_splits: 1
+    test_steps: 1000
+    train_avg_report_steps: 500
+    total_steps: 200000
+    checkpoint_steps: 10000
+    shuffle_size: 250000
+    lr_values:
+        - 0.1
+        - 0.01
+        - 0.001
+        - 0.0001
+    lr_boundaries:
+        - 80000
+        - 140000
+        - 180000
+    policy_loss_weight: 1.0
+    value_loss_weight: 0.25
+    path: 'gs://jeremylorino-staging-bq-data/chess/lczero_model/'
+
+model:
+  filters: 64
+  residual_blocks: 6
+...

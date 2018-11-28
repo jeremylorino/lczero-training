@@ -4,13 +4,13 @@ name: 'kb1-64x6'                       # ideally no spaces
 gpu: 0                                 # gpu id to process on
 
 dataset: 
-  num_chunks: 100000                   # newest nof chunks to parse
+  num_chunks: 10000                   # newest nof chunks to parse
   train_ratio: 0.90                    # trainingset ratio
   # For separated test and train data.
-  input_train: '/path/to/chunks/*/draw/' # supports glob
-  input_test: '/path/to/chunks/*/draw/'  # supports glob
+#   input_train: '/path/to/chunks/*/draw/' # supports glob
+#   input_test: '/path/to/chunks/*/draw/'  # supports glob
   # For a one-shot run with all data in one directory.
-  # input: '/path/to/chunks/*/draw/'
+  input: '/home/jeremylorino/lczero-training/data/training-run1-20181116-2017/'
 
 training:
     batch_size: 2048                   # training batch
@@ -29,7 +29,7 @@ training:
         - 130000
     policy_loss_weight: 1.0            # weight of policy loss
     value_loss_weight: 1.0             # weight of value loss
-    path: '/path/to/store/networks'    # network storage dir
+    path: '/home/jeremylorino/lczero-training/networks/'    # network storage dir
 
 model:
   filters: 64

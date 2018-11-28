@@ -27,6 +27,7 @@ import multiprocessing as mp
 import tensorflow as tf
 from tfprocess import TFProcess
 from chunkparser import ChunkParser
+import numpy as np
 
 SKIP = 32
 
@@ -60,6 +61,13 @@ class FileDataSrc:
     def __init__(self, chunks):
         self.chunks = []
         self.done = chunks
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.next()
+
     def next(self):
         if not self.chunks:
             self.chunks, self.done = self.done, self.chunks
@@ -105,29 +113,46 @@ def main(cmd):
     if not os.path.exists(root_dir):
         os.makedirs(root_dir)
 
-    train_parser = ChunkParser(FileDataSrc(train_chunks),
-            shuffle_size=shuffle_size, sample=SKIP, batch_size=ChunkParser.BATCH_SIZE)
-    dataset = tf.data.Dataset.from_generator(
-        train_parser.parse, output_types=(tf.string, tf.string, tf.string))
-    dataset = dataset.map(ChunkParser.parse_function)
+    def map_fn(example_proto):
+        """
+        planes <tf.Tensor 'Reshape:0' shape=(2048, 112, 64) dtype=float32>
+        probs <tf.Tensor 'Reshape_1:0' shape=(2048, 1858) dtype=float32>
+        winner <tf.Tensor 'Reshape_2:0' shape=(2048, 1) dtype=float32>
+        """
+
+        tfrecord_features = {
+            'planes': tf.FixedLenFeature((112, 64), tf.float32),
+            'probs': tf.FixedLenFeature((1858), tf.float32),
+            'winner': tf.FixedLenFeature([], tf.float32)
+        }
+        parsed_features = tf.parse_single_example(example_proto, tfrecord_features)
+        planes, probs, winner = parsed_features["planes"], parsed_features["probs"], parsed_features["winner"]
+
+        return planes, probs, winner
+
+    filenames = [
+        "gs://jeremylorino-staging-bq-data/chess/lczero_data/train.tfrecords",
+        "gs://jeremylorino-staging-bq-data/chess/lczero_data/train.tfrecords"]
+    dataset = tf.data.TFRecordDataset(filenames)
+    dataset = dataset.map(map_fn, num_parallel_calls=10)
     dataset = dataset.prefetch(4)
     train_iterator = dataset.make_one_shot_iterator()
 
-    shuffle_size = int(shuffle_size*(1.0-train_ratio))
-    test_parser = ChunkParser(FileDataSrc(test_chunks),
-            shuffle_size=shuffle_size, sample=SKIP, batch_size=ChunkParser.BATCH_SIZE)
-    dataset = tf.data.Dataset.from_generator(
-        test_parser.parse, output_types=(tf.string, tf.string, tf.string))
-    dataset = dataset.map(ChunkParser.parse_function)
+    # shuffle_size = int(shuffle_size*(1.0-train_ratio))
+    filenames = [
+        "gs://jeremylorino-staging-bq-data/chess/lczero_data/test.tfrecords",
+        "gs://jeremylorino-staging-bq-data/chess/lczero_data/test.tfrecords"]
+    dataset = tf.data.TFRecordDataset(filenames)
+    dataset = dataset.map(map_fn, num_parallel_calls=10) # .take(int(num_chunks*(1.0-train_ratio)))
     dataset = dataset.prefetch(4)
     test_iterator = dataset.make_one_shot_iterator()
 
     tfprocess = TFProcess(cfg)
     tfprocess.init(dataset, train_iterator, test_iterator)
 
-    if os.path.exists(os.path.join(root_dir, 'checkpoint')):
-        cp = tf.train.latest_checkpoint(root_dir)
-        tfprocess.restore(cp)
+    # if os.path.exists(os.path.join(root_dir, 'checkpoint')):
+    cp = tf.train.latest_checkpoint('gs://jeremylorino-staging-bq-data/chess/lczero_model/64x6-test-6/')
+    tfprocess.restore(cp)
 
     # Sweeps through all test chunks statistically
     # Assumes average of 10 samples per test game.
@@ -142,8 +167,6 @@ def main(cmd):
         tfprocess.save_leelaz_weights(cmd.output)
 
     tfprocess.session.close()
-    train_parser.shutdown()
-    test_parser.shutdown()
 
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description=\

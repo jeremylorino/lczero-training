@@ -20,6 +20,7 @@ import numpy as np
 import os
 import random
 import tensorflow as tf
+from tensorflow.contrib import tpu
 import time
 import bisect
 
@@ -50,7 +51,7 @@ def bias_variable(shape, name=None):
     return tf.Variable(initial, name=name)
 
 def conv2d(x, W):
-    return tf.nn.conv2d(x, W, data_format='NCHW',
+    return tf.nn.conv2d(x, W, data_format='NHWC',
                         strides=[1, 1, 1, 1], padding='SAME')
 
 class TFProcess:
@@ -71,22 +72,19 @@ class TFProcess:
         # Limit momentum of SWA exponential average to 1 - 1/(swa_max_n + 1)
         self.swa_max_n = self.cfg['training'].get('swa_max_n', 0)
 
-        gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.90, allow_growth=True, visible_device_list="{}".format(self.cfg['gpu']))
-        config = tf.ConfigProto(gpu_options=gpu_options)
-        self.session = tf.Session(config=config)
+        tf.logging.set_verbosity(tf.logging.DEBUG)
+        self.tpu_grpc_url = tf.contrib.cluster_resolver.TPUClusterResolver(
+            tpu=[os.environ['TPU_NAME']]).get_master()
+        self.session = tf.Session(self.tpu_grpc_url)
 
         self.training = tf.placeholder(tf.bool)
         self.global_step = tf.Variable(0, name='global_step', trainable=False)
         self.learning_rate = tf.placeholder(tf.float32)
 
     def init(self, dataset, train_iterator, test_iterator):
-        # TF variables
-        self.handle = tf.placeholder(tf.string, shape=[])
-        iterator = tf.data.Iterator.from_string_handle(
-            self.handle, dataset.output_types, dataset.output_shapes)
+        self.session.run(tpu.initialize_system())
+        iterator = dataset.make_one_shot_iterator()
         self.next_batch = iterator.get_next()
-        self.train_handle = self.session.run(train_iterator.string_handle())
-        self.test_handle = self.session.run(test_iterator.string_handle())
         self.init_net(self.next_batch)
 
     def init_net(self, next_batch):
@@ -162,7 +160,7 @@ class TFProcess:
             [(accum, gradient[1]) for accum, gradient in zip(gradient_accum, gradients)], global_step=self.global_step)
 
         correct_prediction = \
-            tf.equal(tf.argmax(self.y_conv, 1), tf.argmax(self.y_, 1))
+            tf.equal(tf.argmax(self.y_conv, -1), tf.argmax(self.y_, -1))
         correct_prediction = tf.cast(correct_prediction, tf.float32)
         self.accuracy = tf.reduce_mean(correct_prediction)
 
@@ -290,7 +288,7 @@ class TFProcess:
             policy_loss, mse_loss, reg_term, _, _ = self.session.run(
                 [self.policy_loss, self.mse_loss, self.reg_term, self.accum_op,
                     self.next_batch],
-                feed_dict={self.training: True, self.handle: self.train_handle})
+                feed_dict={self.training: True})
             # Keep running averages
             # Google's paper scales MSE by 1/4 to a [0, 1] range, so do the same to
             # get comparable values.
@@ -301,7 +299,7 @@ class TFProcess:
         # Gradients of batch splits are summed, not averaged like usual, so need to scale lr accordingly to correct for this.
         corrected_lr = self.lr / batch_splits
         _, grad_norm = self.session.run([self.train_op, self.grad_norm],
-            feed_dict={self.learning_rate: corrected_lr, self.training: True, self.handle: self.train_handle})
+            feed_dict={self.learning_rate: corrected_lr, self.training: True})
 
         # Update steps since training should have incremented it.
         steps = tf.train.global_step(self.session, self.global_step)
@@ -384,8 +382,7 @@ class TFProcess:
             test_policy, test_accuracy, test_mse, _ = self.session.run(
                 [self.policy_loss, self.accuracy, self.mse_loss,
                  self.next_batch],
-                feed_dict={self.training: False,
-                           self.handle: self.test_handle})
+                feed_dict={self.training: False})
             sum_accuracy += test_accuracy
             sum_mse += test_mse
             sum_policy += test_policy
@@ -555,9 +552,8 @@ class TFProcess:
             h_bn = \
                 tf.layers.batch_normalization(
                     conv2d(inputs, W_conv),
-                    epsilon=1e-5, axis=1, fused=True,
+                    epsilon=1e-5, fused=True,
                     center=True, scale=False,
-                    virtual_batch_size=64,
                     training=self.training)
         h_conv = tf.nn.relu(h_bn)
 
@@ -592,18 +588,16 @@ class TFProcess:
             h_bn1 = \
                 tf.layers.batch_normalization(
                     conv2d(inputs, W_conv_1),
-                    epsilon=1e-5, axis=1, fused=True,
+                    epsilon=1e-5, fused=True,
                     center=True, scale=False,
-                    virtual_batch_size=64,
                     training=self.training)
         h_out_1 = tf.nn.relu(h_bn1)
         with tf.variable_scope(weight_key_2):
             h_bn2 = \
                 tf.layers.batch_normalization(
                     conv2d(h_out_1, W_conv_2),
-                    epsilon=1e-5, axis=1, fused=True,
+                    epsilon=1e-5, fused=True,
                     center=True, scale=False,
-                    virtual_batch_size=64,
                     training=self.training)
         h_out_2 = tf.nn.relu(tf.add(h_bn2, orig))
 
@@ -636,9 +630,9 @@ class TFProcess:
         return h_out_2
 
     def construct_net(self, planes):
-        # NCHW format
-        # batch, 112 input channels, 8 x 8
-        x_planes = tf.reshape(planes, [-1, 112, 8, 8])
+        # NHWC format
+        # batch, 8 x 8, 112 input channels
+        x_planes = tf.reshape(planes, [-1, 8, 8, 112])
 
         # Input convolution
         flow = self.conv_block(x_planes, filter_size=3,

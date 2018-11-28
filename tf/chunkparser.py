@@ -87,13 +87,13 @@ class ChunkParser:
         self.readers = []
         self.writers = []
         self.processes = []
-        for _ in range(workers):
-            read, write = mp.Pipe(duplex=False)
-            p = mp.Process(target=self.task, args=(chunkdatasrc, write))
-            self.processes.append(p)
-            p.start()
-            self.readers.append(read)
-            self.writers.append(write)
+        # for _ in range(workers):
+        #     read, write = mp.Pipe(duplex=False)
+        #     p = mp.Process(target=self.task, args=(chunkdatasrc, write))
+        #     self.processes.append(p)
+        #     p.start()
+        #     self.readers.append(read)
+        #     self.writers.append(write)
         self.init_structs()
 
 
@@ -145,7 +145,7 @@ class ChunkParser:
         return (planes, probs, winner)
 
 
-    def convert_v3_to_tuple(self, content):
+    def convert_v3_to_tuple(self, content, return_planes=False):
         """
         Unpack a v3 binary record to 3-tuple (state, policy pi, result)
 
@@ -168,7 +168,22 @@ class ChunkParser:
 
         # Unpack bit planes and cast to 32 bit float
         planes = np.unpackbits(np.frombuffer(planes, dtype=np.uint8)).astype(np.float32)
+        
         rule50_plane = (np.zeros(8*8, dtype=np.float32) + rule50_count) / 99
+        
+        planes1 = np.append(
+                planes.reshape((104, 64)),
+                [
+                    self.flat_planes[us_ooo],
+                    self.flat_planes[us_oo],
+                    self.flat_planes[them_ooo],
+                    self.flat_planes[them_oo],
+                    self.flat_planes[stm],
+                    rule50_plane,
+                    self.flat_planes[move_count],
+                    self.flat_planes[1]
+                ])
+        raw_pack = (ver, probs, planes, us_ooo, us_oo, them_ooo, them_oo, stm, rule50_count, move_count, winner, planes1)
 
         # Concatenate all byteplanes. Make the last plane all 1's so the NN can
         # detect edges of the board more easily
@@ -181,11 +196,29 @@ class ChunkParser:
                  rule50_plane.tobytes() + \
                  self.flat_planes[move_count].tobytes() + \
                  self.flat_planes[1].tobytes()
-
+        
         assert len(planes) == ((8*13*1 + 8*1*1) * 8 * 8 * 4)
         winner = float(winner)
         assert winner == 1.0 or winner == -1.0 or winner == 0.0
+        
+        raw_pack = (
+            raw_pack[0], 
+            raw_pack[1], 
+            raw_pack[2], 
+            raw_pack[3], 
+            raw_pack[4], 
+            raw_pack[5], 
+            raw_pack[6], 
+            raw_pack[7], 
+            # raw_pack[8], 
+            rule50_plane,
+            raw_pack[9], 
+            winner, 
+            raw_pack[11])
         winner = struct.pack('f', winner)
+
+        if return_planes:
+            return (planes, probs, winner), raw_pack
 
         return (planes, probs, winner)
 
